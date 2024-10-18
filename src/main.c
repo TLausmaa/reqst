@@ -4,9 +4,9 @@
 int main()
 {
     req_opts opts = { 
-        .http_protocol_version = "2",
+        .http_protocol_version = "1.1",
         .method = "GET",
-        .url = "yle.fi" 
+        .url = "news.ycombinator.com" 
     };
 
     serv_response* res = request(&opts);

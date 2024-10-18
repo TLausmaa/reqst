@@ -36,6 +36,8 @@ typedef struct membuf {
 
 SSL_CTX *ssl_ctx = NULL;
 
+void debug_ssl();
+
 int init_openssl() {
     static char init = 0;
     if (init) {
@@ -46,7 +48,8 @@ int init_openssl() {
     SSL_load_error_strings();
     SSL_library_init();
     ssl_ctx = SSL_CTX_new(TLS_client_method());
-    SSL_CTX_set_options(ssl_ctx, SSL_OP_NO_SSLv2);
+    SSL_CTX_set_options(ssl_ctx, SSL_OP_NO_SSLv2 | SSL_OP_NO_SSLv3 | SSL_OP_NO_TLSv1 | SSL_OP_NO_TLSv1_1);
+    debug_ssl();
     init = 1;
     return 1;
 }
@@ -93,6 +96,33 @@ char* get_addr(const char* host) {
     }
 }
 
+void ssl_info_callback(const SSL *ssl, int where, int ret) {
+    const char *str;
+    int w = where & ~SSL_ST_MASK;
+    
+    if (w & SSL_ST_CONNECT) str = "SSL_connect";
+    else if (w & SSL_ST_ACCEPT) str = "SSL_accept";
+    else str = "undefined";
+
+    if (where & SSL_CB_LOOP) {
+        printf("%s: %s\n", str, SSL_state_string_long(ssl));
+    } else if (where & SSL_CB_ALERT) {
+        str = (where & SSL_CB_READ) ? "read" : "write";
+        printf("SSL3 alert %s: %s: %s\n", str,
+               SSL_alert_type_string_long(ret),
+               SSL_alert_desc_string_long(ret));
+    } else if (where & SSL_CB_EXIT) {
+        if (ret == 0)
+            printf("%s: failed in %s\n", str, SSL_state_string_long(ssl));
+        else if (ret < 0)
+            printf("%s: error in %s\n", str, SSL_state_string_long(ssl));
+    }
+}
+
+void debug_ssl() {
+    SSL_CTX_set_info_callback(ssl_ctx, &ssl_info_callback);
+}
+
 membuf* process_connection(int sockfd, req_opts* opts)
 {
     SSL* ssl = establish_ssl(sockfd);
@@ -102,7 +132,7 @@ membuf* process_connection(int sockfd, req_opts* opts)
     }
 
     char req[256];
-    snprintf(req, 256, "%s / HTTP/%s\r\nHost: %s\r\n\r\n", opts->http_protocol_version, opts->method, opts->url);
+    snprintf(req, 256, "%s / HTTP/%s\r\nHost: %s\r\n\r\n", opts->method, opts->http_protocol_version, opts->url);
     int n = 0;
 
     if ((n = SSL_write(ssl, req, sizeof(req))) < 1) {
