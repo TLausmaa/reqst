@@ -10,12 +10,14 @@
 #include <sys/ioctl.h>
 #include <unistd.h> 
 #include <openssl/ssl.h>
+#include <openssl/err.h>
 #include "req.h"
 
 typedef struct req_opts {
     char* http_protocol_version;
     char* method;
     char* url;
+    char* path;
 } req_opts;
 
 typedef struct serv_response {
@@ -48,16 +50,23 @@ int init_openssl() {
     SSL_load_error_strings();
     SSL_library_init();
     ssl_ctx = SSL_CTX_new(TLS_client_method());
-    SSL_CTX_set_options(ssl_ctx, SSL_OP_NO_SSLv2 | SSL_OP_NO_SSLv3 | SSL_OP_NO_TLSv1 | SSL_OP_NO_TLSv1_1);
+    SSL_CTX_set_options(ssl_ctx, SSL_OP_NO_SSLv2 | SSL_OP_NO_SSLv3 | SSL_OP_NO_TLSv1); // | SSL_OP_NO_TLSv1_1 | SSL_OP_NO_TLSv1_2);
     debug_ssl();
     init = 1;
     return 1;
 }
 
-SSL* establish_ssl(int sockfd) {
+SSL* establish_ssl(int sockfd, char* hostname) {
     // create an SSL connection and attach it to the socket
     SSL* ssl = SSL_new(ssl_ctx);
     SSL_set_fd(ssl, sockfd);
+
+    // SSL_CTX_set_min_proto_version(ssl_ctx, TLS1_3_VERSION);
+
+    SSL_CTX_set_min_proto_version(ssl_ctx, TLS1_VERSION);  // Minimum TLS 1.0
+    SSL_CTX_set_max_proto_version(ssl_ctx, TLS1_3_VERSION);  // Maximum TLS 1.3
+
+    SSL_set_tlsext_host_name(ssl, hostname); // SNI (Server Name Indication)
 
     // perform the SSL/TLS handshake with the server - when on the
     // server side, this would use SSL_accept()
@@ -65,6 +74,9 @@ SSL* establish_ssl(int sockfd) {
     if (conn_result_code < 1) {
         int reason = SSL_get_error(ssl, conn_result_code);
         printf("SSL_connect failed with err code: %d, reason: %d\n", conn_result_code, reason);
+        printf("Printing error stack:\n");
+        ERR_print_errors_fp(stderr);
+        printf("End of error stack:\n");
         return NULL;
     }
 
@@ -125,14 +137,17 @@ void debug_ssl() {
 
 membuf* process_connection(int sockfd, req_opts* opts)
 {
-    SSL* ssl = establish_ssl(sockfd);
+    SSL* ssl = establish_ssl(sockfd, opts->url);
     if (ssl == NULL) {
         printf("Establishing SSL connection failed\n");
         return NULL;
     }
 
+    char path[256];
+    snprintf(path, 256, "%s", opts->path == NULL ? "/" : opts->path);
+
     char req[256];
-    snprintf(req, 256, "%s / HTTP/%s\r\nHost: %s\r\n\r\n", opts->method, opts->http_protocol_version, opts->url);
+    snprintf(req, 256, "%s %s HTTP/%s\r\nHost: %s\r\n\r\n", opts->method, path, opts->http_protocol_version, opts->url);
     int n = 0;
 
     if ((n = SSL_write(ssl, req, sizeof(req))) < 1) {

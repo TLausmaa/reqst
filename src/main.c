@@ -6,7 +6,8 @@ int main()
     req_opts opts = { 
         .http_protocol_version = "1.1",
         .method = "GET",
-        .url = "news.ycombinator.com" 
+        .url = "reqres.in",
+        .path = "/api/users/2"
     };
 
     serv_response* res = request(&opts);
