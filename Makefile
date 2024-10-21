@@ -5,7 +5,7 @@ LIBS = -lssl -lcrypto
 SRC_DIR = ./src
 SRC = $(SRC_DIR)/main.c 
 OBJ = $(SRC:.c=.o)
-TARGET = serv
+TARGET = req
 
 all: $(TARGET) cleanobjects
 
