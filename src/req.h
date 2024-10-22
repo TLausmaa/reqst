@@ -193,8 +193,9 @@ membuf* process_connection(int sockfd, reqst_opts* opts)
 
     DPRINT("Request:###\n%s\n###\n", req.data);
 
-    int n = 0;
-    if ((n = SSL_write(ssl, req.data, req.len)) < 1) {
+    int bytes_written = SSL_write(ssl, req.data, req.len);
+    free(req.data);
+    if (bytes_written < 1) {
         perror("ERROR writing to socket.");
         return NULL;
     }
