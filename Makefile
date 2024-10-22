@@ -21,7 +21,7 @@ clean:
 cleanobjects:
 	rm -f $(OBJ)
 
-run: $(TARGET) cleanobjects runb
+run: $(TARGET) cleanobjects exec
 
-runb:
+exec:
 	./$(TARGET)

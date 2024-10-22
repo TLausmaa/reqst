@@ -13,12 +13,14 @@
 #include <openssl/err.h>
 #include "req.h"
 
-typedef struct req_opts {
+typedef struct reqst_opts {
     char* http_protocol_version;
     char* method;
     char* url;
     char* path;
-} req_opts;
+    char* body;
+    char* headers[10];
+} reqst_opts;
 
 typedef struct membuf {
     char* data;
@@ -30,17 +32,17 @@ typedef struct header {
     membuf* val;
 } header;
 
-typedef struct serv_response {
+typedef struct reqst_response {
     int     http_status_code;
     int     headers_num;
     int     headers_cap;
     header* headers;
     membuf* body;
-} serv_response;
+} reqst_response;
 
-serv_response* request(req_opts* opts);
+reqst_response* request(reqst_opts* opts);
 
-#ifdef SERV_REQ_IMPLEMENTATION
+#ifdef REQST_IMPLEMENTATION
 
 #define MAX_READ 2048
 #define PORT 443
@@ -55,6 +57,13 @@ serv_response* request(req_opts* opts);
 SSL_CTX *ssl_ctx = NULL;
 
 void debug_ssl();
+
+void membuf_append(membuf* b, char* s, int n) {
+    b->data = realloc(b->data, b->len + n + 1);
+    memcpy(b->data + b->len, s, n);
+    b->data[b->len + n] = '\0';
+    b->len += n;
+}
 
 int init_openssl() {
     static char init = 0;
@@ -147,7 +156,7 @@ void debug_ssl() {
     SSL_CTX_set_info_callback(ssl_ctx, &ssl_info_callback);
 }
 
-membuf* process_connection(int sockfd, req_opts* opts)
+membuf* process_connection(int sockfd, reqst_opts* opts)
 {
     SSL* ssl = establish_ssl(sockfd, opts->url);
     if (ssl == NULL) {
@@ -155,14 +164,37 @@ membuf* process_connection(int sockfd, req_opts* opts)
         return NULL;
     }
 
-    char path[256];
-    snprintf(path, 256, "%s", opts->path == NULL ? "/" : opts->path);
+    membuf req = { .data = NULL, .len = 0 };
+    asprintf(&req.data, "%s %s HTTP/%s\r\nHost: %s\r\n", 
+        opts->method, 
+        opts->path == NULL ? "/" : opts->path, 
+        opts->http_protocol_version, 
+        opts->url);
+    req.len = strlen(req.data);
 
-    char req[256];
-    snprintf(req, 256, "%s %s HTTP/%s\r\nHost: %s\r\n\r\n", opts->method, path, opts->http_protocol_version, opts->url);
+    for (int i = 0; i < 10; i++) {
+        if (opts->headers[i] == NULL) {
+            break;
+        }
+        membuf_append(&req, opts->headers[i], strlen(opts->headers[i]));
+        membuf_append(&req, "\r\n", 2);
+    }
+
+    if (opts->body != NULL) {
+        membuf_append(&req, "Content-Length: ", 16);
+        char content_length[16];
+        snprintf(content_length, 16, "%lu", strlen(opts->body));
+        membuf_append(&req, content_length, strlen(content_length));
+        membuf_append(&req, "\r\n\r\n", 4);
+        membuf_append(&req, opts->body, strlen(opts->body));
+    } else {
+        membuf_append(&req, "\r\n", 2);
+    }
+
+    DPRINT("Request:###\n%s\n###\n", req.data);
+
     int n = 0;
-
-    if ((n = SSL_write(ssl, req, sizeof(req))) < 1) {
+    if ((n = SSL_write(ssl, req.data, req.len)) < 1) {
         perror("ERROR writing to socket.");
         return NULL;
     }
@@ -211,7 +243,7 @@ membuf* process_connection(int sockfd, req_opts* opts)
     return res;
 }
 
-void deserialize_header(serv_response* response, char* header_line) {
+void deserialize_header(reqst_response* response, char* header_line) {
     char* header_save_ptr;
     int len      = strlen(header_line);
     char* key    = strtok_r(header_line, ":", &header_save_ptr);
@@ -244,13 +276,13 @@ void deserialize_header(serv_response* response, char* header_line) {
     }
 }
 
-serv_response* deserialize_response(membuf* res) {
+reqst_response* deserialize_response(membuf* res) {
     if (res == NULL) {
         DPRINT("Response is NULL, nothing to deserialize\n");
         return NULL;
     }
     
-    serv_response* response = (serv_response*)malloc(sizeof(serv_response));
+    reqst_response* response = (reqst_response*)malloc(sizeof(reqst_response));
     response->http_status_code = 200;
     response->headers = (header*)malloc(sizeof(header) * 2);
     response->headers_num = 0;
@@ -304,7 +336,7 @@ serv_response* deserialize_response(membuf* res) {
     return response;
 }
 
-serv_response* request(req_opts* opts) {
+reqst_response* request(reqst_opts* opts) {
     init_openssl();
 
     int sockfd;
@@ -337,4 +369,4 @@ serv_response* request(req_opts* opts) {
     return deserialize_response(res);
 }
 
-#endif // SERV_REQ_IMPLEMENTATION
+#endif // REQST_IMPLEMENTATION
