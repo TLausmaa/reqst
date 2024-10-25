@@ -56,8 +56,8 @@ reqst_response* request(reqst_opts* opts);
 
 SSL_CTX *ssl_ctx = NULL;
 
+reqst_response* alloc_new_response();
 void debug_ssl();
-reqst_response* init_response();
 int check_body_len(membuf* buf);
 void deserialize_headers(reqst_response* response, membuf* orig_buf);
 char* get_header_value(char* header_name, reqst_response* response);
@@ -160,6 +160,35 @@ void debug_ssl() {
     SSL_CTX_set_info_callback(ssl_ctx, &ssl_info_callback);
 }
 
+void build_request_payload(membuf* buf, reqst_opts* opts) {
+    asprintf(&buf->data, "%s %s HTTP/%s\r\nHost: %s\r\n", 
+        opts->method, 
+        opts->path == NULL ? "/" : opts->path, 
+        opts->http_protocol_version, 
+        opts->url);
+    buf->len = strlen(buf->data);
+
+    for (int i = 0; i < 10; i++) {
+        if (opts->headers[i] == NULL) {
+            break;
+        }
+        membuf_append(buf, opts->headers[i], strlen(opts->headers[i]));
+        membuf_append(buf, "\r\n", 2);
+    }
+
+    if (opts->body != NULL) {
+        membuf_append(buf, "Content-Length: ", 16);
+        char content_length[16];
+        snprintf(content_length, 16, "%lu", strlen(opts->body));
+        membuf_append(buf, content_length, strlen(content_length));
+        membuf_append(buf, "\r\n\r\n", 4);
+        membuf_append(buf, opts->body, strlen(opts->body));
+    } else {
+        membuf_append(buf, "\r\n", 2);
+    }
+    DPRINT("Request:###\n%s\n###\n", buf->data);
+}
+
 membuf* process_connection(int sockfd, reqst_opts* opts)
 {
     SSL* ssl = establish_ssl(sockfd, opts->url);
@@ -169,33 +198,7 @@ membuf* process_connection(int sockfd, reqst_opts* opts)
     }
 
     membuf req = { .data = NULL, .len = 0 };
-    asprintf(&req.data, "%s %s HTTP/%s\r\nHost: %s\r\n", 
-        opts->method, 
-        opts->path == NULL ? "/" : opts->path, 
-        opts->http_protocol_version, 
-        opts->url);
-    req.len = strlen(req.data);
-
-    for (int i = 0; i < 10; i++) {
-        if (opts->headers[i] == NULL) {
-            break;
-        }
-        membuf_append(&req, opts->headers[i], strlen(opts->headers[i]));
-        membuf_append(&req, "\r\n", 2);
-    }
-
-    if (opts->body != NULL) {
-        membuf_append(&req, "Content-Length: ", 16);
-        char content_length[16];
-        snprintf(content_length, 16, "%lu", strlen(opts->body));
-        membuf_append(&req, content_length, strlen(content_length));
-        membuf_append(&req, "\r\n\r\n", 4);
-        membuf_append(&req, opts->body, strlen(opts->body));
-    } else {
-        membuf_append(&req, "\r\n", 2);
-    }
-
-    DPRINT("Request:###\n%s\n###\n", req.data);
+    build_request_payload(&req, opts);    
 
     int bytes_written = SSL_write(ssl, req.data, req.len);
     free(req.data);
@@ -204,8 +207,8 @@ membuf* process_connection(int sockfd, reqst_opts* opts)
         return NULL;
     }
 
-    reqst_response* response = init_response();
-
+    reqst_response* response = alloc_new_response();
+    
     membuf* buf = (membuf*)malloc(sizeof(membuf));
     buf->data = NULL;
     buf->len = 0;
@@ -318,7 +321,7 @@ int check_body_len(membuf* buf) {
     return body_len;
 }
 
-reqst_response* init_response() {
+reqst_response* alloc_new_response() {
     reqst_response* response = (reqst_response*)malloc(sizeof(reqst_response));
     response->http_status_code = 200;
     response->headers = (header*)malloc(sizeof(header) * 2);
