@@ -24,4 +24,4 @@ cleanobjects:
 run: $(TARGET) cleanobjects exec
 
 exec:
-	./$(TARGET)
+	./$(TARGET) $(ARGS)

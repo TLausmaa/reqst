@@ -235,19 +235,22 @@ membuf* process_connection(int sockfd, reqst_opts* opts)
             DPRINT("Read %d bytes\n", num_read);
 
             int body_len = check_body_len(buf);
-            if (body_len != -1) {
-                if (headers_checked == 0) {
-                    deserialize_headers(response, buf);
-                    char* v = get_header_value("Content-Length", response);
-                    if (v != NULL) {
-                        content_len_header_val = atoi(v);
-                    }
+            if (headers_checked == 0) {
+                deserialize_headers(response, buf);
+                char* v = get_header_value("Content-Length", response);
+                if (v != NULL) {
+                    content_len_header_val = atoi(v);
+                }
+                if (v != NULL || body_len != -1) {
+                    // If end of headers section was not found, there might still be
+                    // more headers coming. We might want to re-check them.
+                    // Unless the Content-Length header was found already, of course.
                     headers_checked = 1;
                 }
-                if (content_len_header_val != -1 && body_len < content_len_header_val) {
-                    // We haven't received the whole body yet
-                    continue; 
-                }
+            }
+            if (content_len_header_val != -1 && body_len < content_len_header_val) {
+                // We haven't received the whole body yet
+                continue; 
             }
 
             // Content-Length header not found, read until we get 0 bytes
