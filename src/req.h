@@ -59,8 +59,8 @@ SSL_CTX *ssl_ctx = NULL;
 reqst_response* alloc_new_response();
 void debug_ssl();
 int check_body_len(membuf* buf);
-void deserialize_headers(reqst_response* response, membuf* orig_buf);
 char* get_header_value(char* header_name, reqst_response* response);
+int find_content_length(membuf* buf);
 
 void membuf_append(membuf* b, char* s, int n) {
     b->data = realloc(b->data, b->len + n + 1);
@@ -207,46 +207,33 @@ membuf* process_connection(int sockfd, reqst_opts* opts)
         return NULL;
     }
 
-    reqst_response* response = alloc_new_response();
-    
     membuf* buf = (membuf*)malloc(sizeof(membuf));
     buf->data = NULL;
     buf->len = 0;
 
     char temp_buf[MAX_READ];
     int content_len_header_val = -1;
-    int headers_checked = 0;
 
     for (;;) {
         bzero(temp_buf, sizeof(temp_buf));
         int num_read = 0;
         if ((num_read = SSL_read(ssl, temp_buf, MAX_READ)) < 1) {
             free(buf);
-            free(response);
             perror("ERROR reading from socket.");
             break;
         }
 
         if (num_read > 0) {
-            buf->data = realloc(buf->data, buf->len + num_read);
+            buf->data = realloc(buf->data, buf->len + num_read + 1);
             memcpy(buf->data + buf->len, temp_buf, num_read);
             buf->len += num_read;
+            buf->data[buf->len] = '\0';
 
             DPRINT("Read %d bytes\n", num_read);
 
             int body_len = check_body_len(buf);
-            if (headers_checked == 0) {
-                deserialize_headers(response, buf);
-                char* v = get_header_value("Content-Length", response);
-                if (v != NULL) {
-                    content_len_header_val = atoi(v);
-                }
-                if (v != NULL || body_len != -1) {
-                    // If end of headers section was not found, there might still be
-                    // more headers coming. We might want to re-check them.
-                    // Unless the Content-Length header was found already, of course.
-                    headers_checked = 1;
-                }
+            if (content_len_header_val == -1) {
+                content_len_header_val = find_content_length(buf);
             }
             if (content_len_header_val != -1 && body_len < content_len_header_val) {
                 // We haven't received the whole body yet
@@ -255,9 +242,6 @@ membuf* process_connection(int sockfd, reqst_opts* opts)
 
             // Content-Length header not found, read until we get 0 bytes
             if (num_read < MAX_READ) {
-                // We've read all the data
-                // except if the response happens to be exactly MAX_READ bytes
-                // TODO: handle that case
                 break;
             }
         } else if (num_read == 0) {
@@ -270,11 +254,7 @@ membuf* process_connection(int sockfd, reqst_opts* opts)
         }
     }
 
-    buf->data = realloc(buf->data, buf->len + 1);
-    buf->data[buf->len] = '\0';
-    buf->len++;
     DPRINT("Response data is:\n%s\n", buf->data);
-
     cleanup_openssl(ssl);
     return buf;
 }
@@ -312,10 +292,29 @@ void deserialize_header(reqst_response* response, char* header_line) {
     }
 }
 
+int find_content_length(membuf* buf) {
+    char* content_length = strcasestr(buf->data, "Content-Length:");
+    if (content_length == NULL) {
+        return -1;
+    }
+
+    char* content_length_val = content_length + 15; // 15 is the length of "Content-Length:"
+    char* end_of_val = strstr(content_length_val, "\r\n");
+    if (end_of_val == NULL) {
+        return -1;
+    }
+
+    if (*content_length_val == ' ') {
+        content_length_val++;
+    }
+
+    int content_length_int = atoi(content_length_val);
+    return content_length_int;
+}
+
 int check_body_len(membuf* buf) {
     char* body_start = strstr(buf->data, "\r\n\r\n");
     if (body_start == NULL) {
-        DPRINT("Could not find end of headers\n");
         return -1;
     }
 
@@ -343,67 +342,13 @@ char* get_header_value(char* header_name, reqst_response* response) {
     return NULL;
 }
 
-void deserialize_headers(reqst_response* response, membuf* orig_buf) {
-    if (orig_buf == NULL || orig_buf->data == NULL) {
+void deserialize_response(membuf* src_buf, reqst_response* response) {
+    if (src_buf == NULL || src_buf->data == NULL) {
         DPRINT("Response is NULL, nothing to deserialize\n");
         return;
     }
-
-    membuf* buf = (membuf*)malloc(sizeof(membuf));
-    buf->data = strdup(orig_buf->data);
-    buf->len = orig_buf->len;
     
-    char* line;
-    char* line_save_ptr;
-    char status_set = 0;
-    char headers_set = 0;
-    line = strtok_r(buf->data, "\n", &line_save_ptr);
-
-    while (line != NULL) {
-        if (line == NULL) {
-            break;
-        }
-
-        // Parse status code
-        if (status_set == 0 && strncmp(line, "HTTP/", 5) == 0) {
-            char* status_save_ptr;
-            char* status_code_str = strtok_r(line, " ", &status_save_ptr);
-            status_code_str = strtok_r(NULL, " ", &status_save_ptr);
-            status_set = 1;
-            if (status_code_str != NULL) {
-                response->http_status_code = atoi(status_code_str);
-            } else {
-                DPRINT("Could not parse status code from status header line\n");
-            }
-        // Parse "key: value" headers
-        } else if (headers_set == 0 && strstr(line, ":") != NULL) {
-            deserialize_header(response, line);
-        } else if (headers_set == 0 && line[0] == '\r') {
-            headers_set = 1;
-        } else {
-            // Encountered body section, stop parsing
-            break;
-        }
-        
-        line = strtok_r(NULL, "\n", &line_save_ptr);
-    }
-
-    free(buf->data);
-    free(buf);
-}
-
-reqst_response* deserialize_response(membuf* buf) {
-    if (buf == NULL || buf->data == NULL) {
-        DPRINT("Response is NULL, nothing to deserialize\n");
-        return NULL;
-    }
-    
-    reqst_response* response = (reqst_response*)malloc(sizeof(reqst_response));
-    response->http_status_code = 200;
-    response->headers = (header*)malloc(sizeof(header) * 2);
-    response->headers_num = 0;
-    response->headers_cap = 2;
-    response->body = NULL;
+    membuf* buf = src_buf;
 
     char* line;
     char* line_save_ptr;
@@ -450,7 +395,6 @@ reqst_response* deserialize_response(membuf* buf) {
 
     free(buf->data);
     free(buf);
-    return response;
 }
 
 reqst_response* request(reqst_opts* opts) {
@@ -479,11 +423,12 @@ reqst_response* request(reqst_opts* opts) {
         DPRINT("connected to the server..\n");
     }
 
-    membuf* res = process_connection(sockfd, opts);
-
+    membuf* buf = process_connection(sockfd, opts);
     close(sockfd);
 
-    return deserialize_response(res);
+    reqst_response* response = alloc_new_response();
+    deserialize_response(buf, response);
+    return response;
 }
 
 #endif // REQST_IMPLEMENTATION
